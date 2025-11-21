@@ -6,6 +6,7 @@ import configparser
 from .result_evaluator import ResultEvaluator
 from .events import Status, StepState
 from .state_store import StepStateStore, StepFlag
+import sys
 
 @dataclass
 class Step:
@@ -439,8 +440,12 @@ class FlowRunner:
             proc = None
             stdout_acc: List[str] = []
             stderr_acc: List[str] = []
-
             try:
+                # --- 新增的邏輯 Start ---
+                if s.type == "interactive":
+                    launcher_script = self.project_root / "interactive_launcher.py"
+                    cmd = f'"{sys.executable}" "{launcher_script}" {cmd}'
+                # --- 新增的邏輯 End ---
                 proc = self._spawn(cmd, workdir)
 
                 def reader(stream, acc, prefix):
