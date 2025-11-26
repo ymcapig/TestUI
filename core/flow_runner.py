@@ -191,7 +191,7 @@ class FlowRunner:
                 stored_sn = info.get("sn")
                 candidate = info.get("run_id")
                 status = (info.get("status") or "").lower()
-                if candidate and (stored_sn in (None, "", self.sn)) and status in {"running", "pending"}:
+                if candidate and (stored_sn in (None, "", self.sn)) and status in {"running", "pending", "finished_fail", "stopped"}:
                     candidate_dir = sn_dir / candidate
                     if candidate_dir.exists():
                         run_id = candidate
@@ -325,7 +325,9 @@ class FlowRunner:
                 break
 
             if res.state in (StepState.FAIL, StepState.TIMEOUT) and not s.ignore_result:
-                if self.run_mode == "stop_on_fail":
+                # --- 修改開始 ---
+                # 讓 stop_on_fail_retry 也能觸發停止
+                if self.run_mode in ["stop_on_fail", "stop_on_fail_retry"]:
                     stopped_on_fail = True
                     self._mark_remaining_skipped(s.order)
                     self.global_status = Status.FAIL
@@ -395,7 +397,17 @@ class FlowRunner:
         sid = self._sid(s)
         res = StepResult()
         existing_flag = self.state_store.read(sid)
-        if existing_flag and existing_flag.status in {StepState.PASS, StepState.FAIL, StepState.TIMEOUT}:
+
+        # --- 修改開始 ---
+        # 新增模式邏輯：如果是 stop_on_fail_retry，只跳過 PASS，FAIL/TIMEOUT 會重測
+        if self.run_mode == "stop_on_fail_retry":
+            print("stop_on_fail_retry")
+            skip_statuses = {StepState.PASS}
+        else:
+            skip_statuses = {StepState.PASS, StepState.FAIL, StepState.TIMEOUT}
+
+        # 檢查是否符合跳過條件
+        if existing_flag and existing_flag.status in skip_statuses:
             res.state = StepState.PASS if existing_flag.status == StepState.PASS else existing_flag.status
             res.note = existing_flag.note or f"resume flag={existing_flag.status}"
             self.step_flags[sid] = existing_flag
@@ -441,13 +453,15 @@ class FlowRunner:
             stdout_acc: List[str] = []
             stderr_acc: List[str] = []
             try:
-                # --- 新增的邏輯 Start ---
                 if s.type == "interactive":
-                    launcher_script = self.project_root / "interactive_launcher.py"
-                    cmd = f'"{sys.executable}" "{launcher_script}" {cmd}'
-                # --- 新增的邏輯 End ---
-                proc = self._spawn(cmd, workdir)
+                    if getattr(sys, 'frozen', False):
+                        cmd = f'"{sys.executable}" --interactive {cmd}'
+                    else:
 
+                        launcher_script = self.project_root / "interactive_launcher.py"
+                        cmd = f'"{sys.executable}" "{launcher_script}" {cmd}'
+
+                proc = self._spawn(cmd, workdir)
                 def reader(stream, acc, prefix):
                     for line in iter(stream.readline, b""):
                         txt = line.decode(errors="ignore")
