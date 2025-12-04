@@ -1,4 +1,4 @@
-﻿import subprocess, threading, time, os, json, re
+import subprocess, threading, time, os, json, re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
@@ -355,6 +355,7 @@ class FlowRunner:
             stopped_on_fail and "stopped_on_fail" in self.report_emit_on
         ):
             self._emit_report()
+            self._emit_aggregated_log()
 
     def pause(self):
         self.pause_requested = True
@@ -585,24 +586,27 @@ class FlowRunner:
         return res
 
     def _emit_report(self):
-        rows = []
-        for s in self.steps:
-            sid = self._sid(s)
-            r = self.results.get(sid, StepResult())
-            rows.append({
-                "step_id": sid,
-                "state": r.state,
-                "exit_code": r.exit_code,
-                "matched_rule": r.matched_rule,
-                "duration_s": r.duration_s,
-                "attempt": r.attempt,
-                "note": r.note,
-                "message": r.log,
-            })
-        report_dir = self.run_dir/"reports"
-        report_dir.mkdir(exist_ok=True, parents=True)
-        json_path = report_dir/f"report_{self.sn}_{self.ts}.json"
-        (json_path).write_text(json.dumps(rows, indent=2), encoding="utf-8-sig")
+            rows = []
+            for s in self.steps:
+                sid = self._sid(s)
+                r = self.results.get(sid, StepResult())
+                rows.append({
+                    "step_id": sid,
+                    "state": r.state,
+                    "exit_code": r.exit_code,
+                    "matched_rule": r.matched_rule,
+                    "duration_s": r.duration_s,
+                    "attempt": r.attempt,
+                    "note": r.note,
+                    "message": r.log,
+                    # --- 新增這行 ---
+                    "pass_criteria": s.pass_by, 
+                    # ----------------
+                })
+            report_dir = self.run_dir/"reports"
+            report_dir.mkdir(exist_ok=True, parents=True)
+            json_path = report_dir/f"report_{self.sn}_{self.ts}.json"
+            (json_path).write_text(json.dumps(rows, indent=2), encoding="utf-8-sig")
 
     def _append_step_log(
         self,
@@ -650,3 +654,52 @@ class FlowRunner:
             self.on_log_line(f"[FILE][{sid}] Failed to read {fp}: {exc}\n")
             return
         self.on_log_line(f"[FILE][{sid}] Contents of {fp}:\n{content}\n")
+
+    def _emit_aggregated_log(self):
+            """
+            將所有步驟的 step.log 讀取並合併成一份完整的 Log 檔案
+            """
+            full_log_name = f"full_log_{self.sn}_{self.ts}.txt"
+            full_log_path = self.run_dir / "reports" / full_log_name
+            
+            full_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                with full_log_path.open("w", encoding="utf-8-sig") as out_f:
+                    out_f.write(f"========== Full Execution Log ==========\n")
+                    out_f.write(f"SN: {self.sn}\n")
+                    out_f.write(f"Run ID: {self.ts}\n")
+                    out_f.write(f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    out_f.write("=" * 40 + "\n\n")
+
+                    for s in self.steps:
+                        sid = self._sid(s)
+                        step_dir = self.run_dir / "steps" / sid
+                        step_log_path = step_dir / "step.log"
+
+                        # --- 修改這裡：寫入標題與 Pass 條件 ---
+                        out_f.write(f"{'-'*40}\n")
+                        out_f.write(f"Step: {s.order}_{s.name}\n")
+                        out_f.write(f"Pass Criteria: {s.pass_by}\n")  # 新增這行
+                        out_f.write(f"{'-'*40}\n")
+                        # ------------------------------------
+
+                        if step_log_path.exists():
+                            try:
+                                content = step_log_path.read_text(encoding="utf-8-sig", errors="replace")
+                                if not content.endswith("\n"):
+                                    content += "\n"
+                                out_f.write(content)
+                            except Exception as e:
+                                out_f.write(f"[ERROR] Failed to read log file: {e}\n")
+                        else:
+                            r = self.results.get(sid)
+                            state = r.state if r else "UNKNOWN"
+                            out_f.write(f"[INFO] No log file available. (State: {state})\n")
+                        
+                        out_f.write("\n")
+                
+                self.on_log_line(f"[REPORT] Full log generated: {full_log_path}\n")
+
+            except Exception as e:
+                print(f"Failed to generate aggregated log: {e}")
