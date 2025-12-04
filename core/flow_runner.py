@@ -1,4 +1,4 @@
-import subprocess, threading, time, os, json, re
+﻿import subprocess, threading, time, os, json, re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
@@ -259,10 +259,18 @@ class FlowRunner:
                 cleaned[key] = value
             return cleaned
 
+        sn_dir = self.project_root / "runs" / self.sn
+        if sn_dir.exists():
+            run_dirs = [d for d in sn_dir.iterdir() if d.is_dir()]
+            self.test_times = len(run_dirs)
+        else:
+            self.test_times = 1
+
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         meta = {
             "sn": self.sn,
             "run_id": self.ts,
+            "test_times": self.test_times, 
             "timestamp": timestamp,
             "run_mode": self.run_mode,
             "debug": bool(self.debug_enabled),
@@ -399,8 +407,6 @@ class FlowRunner:
         res = StepResult()
         existing_flag = self.state_store.read(sid)
 
-        # --- 修改開始 ---
-        # 新增模式邏輯：如果是 stop_on_fail_retry，只跳過 PASS，FAIL/TIMEOUT 會重測
         if self.run_mode == "stop_on_fail_retry":
             print("stop_on_fail_retry")
             skip_statuses = {StepState.PASS}
@@ -498,7 +504,8 @@ class FlowRunner:
                 if not log_reset:
                     if log_path.exists():
                         try:
-                            log_path.unlink()
+                            with log_path.open("a", encoding="utf-8-sig") as f:
+                                f.write(f"\n{'='*20} RESUME / RETRY SESSION {'='*20}\n")
                         except Exception:
                             pass
                     log_reset = True
@@ -591,6 +598,8 @@ class FlowRunner:
                 sid = self._sid(s)
                 r = self.results.get(sid, StepResult())
                 rows.append({
+                    "sn": self.sn,              # 方便對應
+                    "test_times": getattr(self, "test_times", 1), # <--- 新增這行
                     "step_id": sid,
                     "state": r.state,
                     "exit_code": r.exit_code,
@@ -599,9 +608,7 @@ class FlowRunner:
                     "attempt": r.attempt,
                     "note": r.note,
                     "message": r.log,
-                    # --- 新增這行 ---
-                    "pass_criteria": s.pass_by, 
-                    # ----------------
+                    "pass_criteria": s.pass_by,
                 })
             report_dir = self.run_dir/"reports"
             report_dir.mkdir(exist_ok=True, parents=True)
@@ -658,6 +665,7 @@ class FlowRunner:
     def _emit_aggregated_log(self):
             """
             將所有步驟的 step.log 讀取並合併成一份完整的 Log 檔案
+            只包含有實際執行或從歷史紀錄恢復的步驟 (忽略 NOT_RUN 和 SKIPPED)
             """
             full_log_name = f"full_log_{self.sn}_{self.ts}.txt"
             full_log_path = self.run_dir / "reports" / full_log_name
@@ -676,15 +684,25 @@ class FlowRunner:
                         sid = self._sid(s)
                         step_dir = self.run_dir / "steps" / sid
                         step_log_path = step_dir / "step.log"
+                        
+                        # 取得當前狀態
+                        r = self.results.get(sid)
+                        state = r.state if r else StepState.NOT_RUN
+                        has_log = step_log_path.exists()
 
-                        # --- 修改這裡：寫入標題與 Pass 條件 ---
+                        # --- 過濾邏輯 ---
+                        # 如果沒有 Log 檔，且狀態是 NOT_RUN 或 SKIPPED，代表完全沒測到，直接跳過不印
+                        if not has_log and state in [StepState.NOT_RUN, StepState.SKIPPED]:
+                            continue
+                        # ----------------
+
+                        # 寫入步驟標題
                         out_f.write(f"{'-'*40}\n")
                         out_f.write(f"Step: {s.order}_{s.name}\n")
-                        out_f.write(f"Pass Criteria: {s.pass_by}\n")  # 新增這行
+                        out_f.write(f"Pass Criteria: {s.pass_by}\n")
                         out_f.write(f"{'-'*40}\n")
-                        # ------------------------------------
 
-                        if step_log_path.exists():
+                        if has_log:
                             try:
                                 content = step_log_path.read_text(encoding="utf-8-sig", errors="replace")
                                 if not content.endswith("\n"):
@@ -693,9 +711,9 @@ class FlowRunner:
                             except Exception as e:
                                 out_f.write(f"[ERROR] Failed to read log file: {e}\n")
                         else:
-                            r = self.results.get(sid)
-                            state = r.state if r else "UNKNOWN"
-                            out_f.write(f"[INFO] No log file available. (State: {state})\n")
+                            # 這裡只會印出 PASS/FAIL/TIMEOUT 等 Resume 的狀態
+                            # 因為 NOT_RUN/SKIPPED 已經在上面被 continue 掉了
+                            out_f.write(f"[INFO] No log file available. (Resumed from State: {state})\n")
                         
                         out_f.write("\n")
                 
