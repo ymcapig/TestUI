@@ -22,7 +22,8 @@ def run_interactive():
         # 注意：這裡不設定 stdout/stderr/stdin 為 PIPE，讓它直接使用新視窗的 I/O
         process = subprocess.Popen(
             target_cmd,
-            creationflags=creation_flags
+            creationflags=creation_flags,
+            shell=True
         )
 
         # 4. 等待該視窗關閉 (OP 操作結束)
