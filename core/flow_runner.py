@@ -1,4 +1,4 @@
-﻿import subprocess, threading, time, os, json, re
+import subprocess, threading, time, os, json, re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
@@ -414,7 +414,7 @@ class FlowRunner:
             skip_statuses = {StepState.PASS, StepState.FAIL, StepState.TIMEOUT}
 
         # 檢查是否符合跳過條件
-        if existing_flag and existing_flag.status in skip_statuses:
+        if not self.debug_enabled and existing_flag and existing_flag.status in skip_statuses:
             res.state = StepState.PASS if existing_flag.status == StepState.PASS else existing_flag.status
             res.note = existing_flag.note or f"resume flag={existing_flag.status}"
             self.step_flags[sid] = existing_flag
@@ -462,11 +462,10 @@ class FlowRunner:
             try:
                 if s.type == "interactive":
                     if getattr(sys, 'frozen', False):
-                        cmd = f'"{sys.executable}" --interactive {cmd}'
+                        cmd = f'"{sys.executable}" --interactive "{cmd}"'
                     else:
-
                         launcher_script = self.project_root / "interactive_launcher.py"
-                        cmd = f'"{sys.executable}" "{launcher_script}" {cmd}'
+                        cmd = f'"{sys.executable}" "{launcher_script}" "{cmd}"'
 
                 proc = self._spawn(cmd, workdir)
                 def reader(stream, acc, prefix):
