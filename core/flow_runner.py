@@ -341,8 +341,14 @@ class FlowRunner:
                     self.global_status = Status.FAIL
                     break
         else:
-            failed = any((r.state in (StepState.FAIL, StepState.TIMEOUT)) and not self._step_by_sid(k).ignore_result
-                         for k, r in self.results.items())
+            failed = False
+            for s in self.steps:
+                sid = self._sid(s)
+                if sid in self.results:
+                    r = self.results[sid]
+                    if r.state in (StepState.FAIL, StepState.TIMEOUT) and not s.ignore_result:
+                        failed = True
+                        break
             self.global_status = Status.PASS if not failed else Status.FAIL
 
         self.on_status_changed(self.global_status)
